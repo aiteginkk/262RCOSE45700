@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+  :root {
+    --bg: #0d1117; --card: #0d1117; --border: #30363d; --text: #e6edf3;
+    --muted: #8b949e; --accent: #f78166; --link: #4493f8;
+    --npu: #2ea043; --host: #2f6feb; --idle: #484f58;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  main { max-width: 1160px; margin: 0 auto; padding: 32px 24px 48px; }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+  h1 { font-size: 24px; font-weight: 600; margin: 0; }
+  .sub { color: var(--muted); font-size: 13px; }
+  select { background: #21262d; color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+           padding: 6px 12px; font: 600 14px inherit; font-family: inherit; cursor: pointer; }
+  .card { border: 1px solid var(--border); border-radius: 6px; padding: 20px; margin-bottom: 20px; background: var(--card); }
+  .card h2 { font-size: 18px; font-weight: 600; margin: 0 0 2px; }
+  .tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--border); margin: 12px 0 20px; overflow-x: auto; }
+  .tab { background: none; border: 0; color: var(--text); font: inherit; font-size: 16px; padding: 8px 10px 10px;
+         cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; }
+  .tab:hover { background: #161b22; border-radius: 6px 6px 0 0; }
+  .tab.active { font-weight: 600; border-bottom-color: var(--accent); }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; }
+  .cols > div { padding-right: 20px; }
+  .cols > div + div { border-left: 1px solid var(--border); padding: 0 0 0 20px; }
+  .label { font-size: 16px; font-weight: 600; }
+  .big { font-size: 30px; font-weight: 400; margin: 12px 0 8px; }
+  .desc { color: var(--muted); font-size: 13px; }
+  .bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: #21262d; margin: 20px 0 16px; }
+  .bar span { display: block; height: 100%; }
+  .bar span + span { margin-left: 1px; }
+  .rows { border-top: 0; }
+  .rowhead, .row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; }
+  .rowhead { color: var(--muted); font-size: 13px; padding-top: 0; }
+  .row { border-top: 1px solid var(--border); }
+  .row.clickable { cursor: pointer; }
+  .row.clickable:hover { background: #161b22; }
+  .row.selected .name { font-weight: 600; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 10px; }
+  .modehead { font-weight: 600; margin-top: 8px; }
+  .empty { color: var(--muted); border: 1px dashed var(--border); border-radius: 6px; padding: 16px; font-size: 13px; }
+  code { background: #161b22; border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+  footer { color: var(--muted); font-size: 12px; }
+  @media (max-width: 640px) {
+    .cols { grid-template-columns: 1fr; }
+    .cols > div + div { border-left: 0; border-top: 1px solid var(--border); padding: 16px 0 0; margin-top: 16px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1 id="title"></h1>
+      <div class="sub" id="meta"></div>
+    </div>
+    <select id="batch" aria-label="Batch size"></select>
+  </header>
+
+  <section class="card">
+    <h2>Performance by model</h2>
+    <div class="tabs" id="tabs" role="tablist"></div>
+    <div class="cols">
+      <div>
+        <div class="label">Compile latency</div>
+        <div class="big" id="compileMs"></div>
+        <div class="desc" id="compileDesc"></div>
+      </div>
+      <div>
+        <div class="label">Speedup vs Eager</div>
+        <div class="big" id="speedup"></div>
+        <div class="desc" id="speedupDesc"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Latency by batch size</h2>
+    <div class="sub">Compile time vs time saved compared with Eager, selected batch</div>
+    <div class="bar" id="latencyBar"></div>
+    <div class="rowhead"><span>Batch</span><span>Eager → Compile (mean ms) · speedup</span></div>
+    <div id="batchRows"></div>
+  </section>
+
+  <section class="card">
+    <h2>Where the time goes</h2>
+    <div class="sub">Average per inference call, from profiler traces (selected model and batch)</div>
+    <div id="breakdown"></div>
+  </section>
+
+  <footer id="footer"></footer>
+</main>
+
+<script id="data" type="application/json">__DATA__</script>
+<script>
+const DATA = JSON.parse(document.getElementById("data").textContent);
+const NAMES = { smallcnn: "SmallCNN", resnet18_chunked: "ResNet-18 (chunked)" };
+const label = m => NAMES[m] || m;
+const fmt = (v, d = 3) => (v == null || !isFinite(v)) ? "—" : v.toFixed(d);
+const models = Object.keys(DATA.models);
+let model = models[0];
+let batch = null;
+
+document.getElementById("title").textContent = DATA.title;
+document.getElementById("meta").textContent = `Generated ${DATA.generated} · Furiosa RNGD · BF16 · CPU fallback off`;
+document.getElementById("footer").textContent =
+  `Latency source: ${DATA.source}. Breakdown from torch.profiler traces (profiler overhead included). Random weights, synthetic inputs.`;
+
+const tabs = document.getElementById("tabs");
+for (const m of models) {
+  const b = document.createElement("button");
+  b.className = "tab"; b.textContent = label(m); b.setAttribute("role", "tab");
+  b.onclick = () => { model = m; batch = null; render(); };
+  tabs.appendChild(b);
+}
+document.getElementById("batch").onchange = e => { batch = e.target.value; render(); };
+
+function batchesOf(m) {
+  return Object.keys(DATA.models[m]).sort((a, b) => a - b);
+}
+
+function seg(color, value, total, title) {
+  const s = document.createElement("span");
+  s.style.background = color;
+  s.style.width = `${Math.max(0, 100 * value / total)}%`;
+  s.title = title;
+  return s;
+}
+
+function render() {
+  [...tabs.children].forEach((t, i) => t.classList.toggle("active", models[i] === model));
+  const batches = batchesOf(model);
+  if (!batches.includes(batch)) batch = batches[0];
+  const select = document.getElementById("batch");
+  select.innerHTML = batches.map(b => `<option value="${b}">Batch: ${b}</option>`).join("");
+  select.value = batch;
+
+  const cur = DATA.models[model][batch] || {};
+  const e = cur.eager || {}, c = cur.compile || {};
+  const sp = e.mean && c.mean ? e.mean / c.mean : null;
+  document.getElementById("compileMs").textContent = c.mean ? `${fmt(c.mean)} ms` : "—";
+  document.getElementById("compileDesc").textContent = c.mean
+    ? `Mean of warm calls at batch ${batch}. p95 ${fmt(c.p95)} ms · ${fmt(c.throughput, 0)} images/s.`
+    : "No benchmark data for this batch.";
+  document.getElementById("speedup").textContent = sp ? `${fmt(sp, 2)}×` : "—";
+  document.getElementById("speedupDesc").textContent = sp
+    ? `Eager ${fmt(e.mean)} ms → Compile ${fmt(c.mean)} ms. Run-to-run CV ${fmt(Math.max(e.cv, c.cv), 2)}% or less.`
+    : "Needs both Eager and Compile results.";
+
+  // Latency bar: compile time (green) + time saved (blue)
+  const bar = document.getElementById("latencyBar");
+  bar.innerHTML = "";
+  if (e.mean && c.mean) {
+    bar.appendChild(seg("var(--npu)", c.mean, e.mean, `Compile ${fmt(c.mean)} ms`));
+    bar.appendChild(seg("var(--host)", e.mean - c.mean, e.mean, `Saved ${fmt(e.mean - c.mean)} ms`));
+  }
+
+  const rows = document.getElementById("batchRows");
+  rows.innerHTML = "";
+  for (const b of batches) {
+    const r = DATA.models[model][b], re = r.eager || {}, rc = r.compile || {};
+    const s = re.mean && rc.mean ? `${fmt(re.mean / rc.mean, 2)}×` : "—";
+    const row = document.createElement("div");
+    row.className = "row clickable" + (b === batch ? " selected" : "");
+    row.innerHTML = `<span class="name"><span class="dot" style="background:${b === batch ? "var(--npu)" : "var(--idle)"}"></span>Batch ${b}</span>
+                     <span>${fmt(re.mean)} → ${fmt(rc.mean)} ms · ${s}</span>`;
+    row.onclick = () => { batch = b; render(); };
+    rows.appendChild(row);
+  }
+
+  // Breakdown per mode
+  const box = document.getElementById("breakdown");
+  box.innerHTML = "";
+  let any = false;
+  for (const mode of ["eager", "compile"]) {
+    const bd = (cur[mode] || {}).breakdown;
+    if (!bd) continue;
+    any = true;
+    const head = document.createElement("div");
+    head.className = "modehead";
+    head.textContent = `${mode === "eager" ? "Eager" : "Compile"} · ${fmt(bd.total_ms)} ms per call`;
+    box.appendChild(head);
+    const b = document.createElement("div");
+    b.className = "bar";
+    const parts = [
+      ["NPU executing", bd.npu_ms, "var(--npu)"],
+      ["Host only (CPU work, transfers)", bd.host_ms, "var(--host)"],
+      ["Idle (nothing recorded)", bd.idle_ms, "var(--idle)"],
+    ];
+    parts.forEach(([n, v, col]) => b.appendChild(seg(col, v, bd.total_ms, `${n}: ${fmt(v)} ms`)));
+    box.appendChild(b);
+    for (const [n, v, col] of parts) {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = `<span><span class="dot" style="background:${col}"></span>${n}</span>
+                       <span>${fmt(v)} ms · ${fmt(100 * v / bd.total_ms, 1)}%</span>`;
+      box.appendChild(row);
+    }
+    if (!bd.has_device_track) {
+      const note = document.createElement("div");
+      note.className = "desc";
+      note.style.margin = "8px 0 16px";
+      note.textContent = "This trace has no NPU track, so NPU time shows as 0 and device work is hidden inside host or idle time.";
+      box.appendChild(note);
+    }
+  }
+  if (!any) {
+    box.innerHTML = `<div class="empty" style="margin-top:16px">No profiler trace for ${label(model)} at batch ${batch} yet.
+      Run <code>profile_modes.py</code> on the NPU server, then rebuild with <code>--traces</code>.</div>`;
+  }
+}
+render();
+</script>
+</body>
+</html>
